@@ -1,0 +1,28 @@
+#include <windows.h>
+
+1 ICON "relais.ico"
+1 RT_MANIFEST "relais.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040C04B0"
+    BEGIN
+      VALUE "FileDescription", "Relais - low-latency capture card viewer"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "ProductName", "Relais"
+      VALUE "ProductVersion", "1.0.0"
+      VALUE "LegalCopyright", "MIT License"
+      VALUE "OriginalFilename", "relais.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x040C, 1200
+  END
+END
