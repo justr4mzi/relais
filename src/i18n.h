@@ -44,6 +44,9 @@ extern int g_lang;
     X(STR_HELP_TEXT, \
       L"Relais shows your capture card in fullscreen with as little delay as possible.\n\n" \
       L"In fullscreen:\n" \
+      L"  F2\tSettings menu (colours, sharpness, volume...)\n" \
+      L"  F1\tLive stats\n" \
+      L"  F12\tScreenshot (Pictures\\Relais)\n" \
       L"  Esc\tBack to this window\n" \
       L"  D\tSkip duplicate frames (on/off)\n" \
       L"  R\tNext colour range (Auto, Limited, Full)\n" \
@@ -56,6 +59,9 @@ extern int g_lang;
       L"Washed-out colours (grey blacks): set the range to \"Limited\". Crushed blacks: \"Full\".", \
       L"Relais affiche ta carte de capture en plein écran avec le moins de latence possible.\n\n" \
       L"Pendant l'affichage :\n" \
+      L"  F2\tMenu des réglages (couleurs, netteté, volume...)\n" \
+      L"  F1\tStats en direct\n" \
+      L"  F12\tCapture d'écran (Images\\Relais)\n" \
       L"  Échap\tRevenir à cette fenêtre\n" \
       L"  D\tIgnorer les doublons (on/off)\n" \
       L"  R\tPlage de couleurs suivante (Auto, Limitée, Pleine)\n" \
@@ -68,6 +74,25 @@ extern int g_lang;
       L"Couleurs délavées (noirs gris) : mets la plage sur « Limitée ». Noirs écrasés : « Pleine ».") \
     X(STR_MF_MISSING, L"Media Foundation is not available. On Windows N editions, install the Media Feature Pack.", L"Media Foundation est indisponible. Sur Windows N, installe le Media Feature Pack.") \
     X(STR_LANG_PROMPT, L"Choose your language", L"Choisis ta langue") \
+    X(STR_VOLUME, L"Volume", L"Volume") \
+    X(STR_MONITOR, L"Screen", L"Écran") \
+    X(STR_MONITOR_ITEM, L"Screen %d: %d x %d%s", L"Écran %d : %d x %d%s") \
+    X(STR_PRIMARY, L" (main)", L" (principal)") \
+    X(STR_AUTOSTART, L"Go fullscreen as soon as Relais opens", L"Lancer le plein écran dès l'ouverture de Relais") \
+    X(STR_ONE_FORMAT, L"Only one format is offered. Windows may be sharing the camera: Settings > Bluetooth & devices > Cameras > your card > Advanced camera options > turn off \"Allow multiple apps\", then click \u21BB.", L"Un seul format est proposé. Windows partage peut-être la caméra : Paramètres > Bluetooth et appareils > Caméras > ta carte > Options avancées > désactive « Autoriser plusieurs applications », puis clique sur \u21BB.") \
+    X(STR_OSD_HINT, L"F2  settings     F1  stats     F12  screenshot     Esc  quit", L"F2  réglages     F1  stats     F12  capture     Échap  quitter") \
+    X(STR_OSD_MENU_HINT, L"\u2191\u2193 choose     \u2190\u2192 adjust     F2 close", L"\u2191\u2193 choisir     \u2190\u2192 régler     F2 fermer") \
+    X(STR_OSD_TITLE, L"Settings", L"Réglages") \
+    X(STR_ON, L"On", L"Activé") \
+    X(STR_OFF, L"Off", L"Désactivé") \
+    X(STR_SHORT_LIMITED, L"Limited", L"Limitée") \
+    X(STR_SHORT_FULL, L"Full", L"Pleine") \
+    X(STR_SKIP_SHORT, L"Skip duplicates", L"Ignorer les doublons") \
+    X(STR_STATS_SOURCE, L"Source  %u x %u  %s  @ %.0f fps", L"Source  %u x %u  %s  @ %.0f fps") \
+    X(STR_STATS_RATES, L"Received %.1f fps    Shown %.1f fps    Duplicates %.1f/s", L"Reçues %.1f i/s    Affichées %.1f i/s    Doublons %.1f/s") \
+    X(STR_STATS_COLOUR, L"Colour  %s, %s", L"Couleurs  %s, %s") \
+    X(STR_SCREENSHOT_SAVED, L"Screenshot saved in Pictures\\Relais", L"Capture enregistrée dans Images\\Relais") \
+    X(STR_SCREENSHOT_FAILED, L"Screenshot failed", L"La capture a échoué") \
     X(STR_ERR_OPEN_CARD, L"Could not open the capture card (0x%08X). Another app (OBS, Discord...) may be using it.", L"Impossible d'ouvrir la carte de capture (0x%08X). Elle est peut-être utilisée par une autre appli (OBS, Discord...).") \
     X(STR_ERR_FORMAT_REFUSED, L"The card refused the chosen format (0x%08X).", L"Le format choisi n'est pas accepté par la carte (0x%08X).") \
     X(STR_ERR_READER, L"Could not create the video reader (0x%08X).", L"Impossible de créer le lecteur vidéo (0x%08X).") \

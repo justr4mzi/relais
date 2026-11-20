@@ -9,5 +9,5 @@ $ZIG c++ -target x86_64-windows-gnu -std=c++17 -O2 -municode -Wl,--subsystem,win
   -Wall -Wno-unknown-pragmas -Wno-missing-braces \
   src/main.cpp src/video.cpp src/audio.cpp src/render.cpp res/relais.rc \
   -o build/relais.exe \
-  -ld3d11 -ldxgi -lmfplat -lmf -lmfreadwrite -lole32 -luuid -lcomctl32 -lgdi32 -luser32 -lshell32
+  -ld3d11 -ldxgi -ld2d1 -ldwrite -lwindowscodecs -lmfplat -lmf -lmfreadwrite -lole32 -luuid -lcomctl32 -lgdi32 -luser32 -lshell32
 echo "build/relais.exe"

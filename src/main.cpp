@@ -16,6 +16,7 @@ enum {
     IDC_BRIGHT_V, IDC_CONTRAST_V, IDC_SAT_V, IDC_SHARP_V,
     IDC_EXCL, IDC_VSYNC, IDC_DUP, IDC_DUPTH, IDC_DUPTH_V,
     IDC_STATUS, IDC_START, IDC_HELPBTN, IDC_SUBTITLE, IDC_HEADER, IDC_LANG,
+    IDC_VOLUME, IDC_VOLUME_V, IDC_MONITOR, IDC_AUTOSTART,
 };
 
 int g_lang = LANG_EN;
@@ -31,6 +32,7 @@ static HWND g_wnd;
 static Settings g_s;
 static std::vector<DeviceInfo> g_videoDevs, g_audioDevs;
 static std::vector<VideoMode> g_modes;
+static std::vector<std::wstring> g_monitors;   // GDI device names, same order as the combo
 static HFONT g_font, g_fontBold, g_fontTitle;
 static int g_dpi = 96;
 
@@ -70,6 +72,10 @@ void LoadSettings(Settings& s) {
     s.dropDuplicates = num(L"DropDuplicates", s.dropDuplicates) != 0;
     s.dupThreshold = std::clamp(num(L"DuplicateThreshold", s.dupThreshold), 1, 60);
     s.language = num(L"Language", 1000) - 1000;
+    s.volume = std::clamp(num(L"Volume", s.volume), 0, 100);
+    s.monitor = ReadStr(ini, L"Monitor");
+    s.autoStart = num(L"AutoStart", s.autoStart) != 0;
+    s.audioDevice = ReadStr(ini, L"AudioDevice");
     if (s.language != LANG_EN && s.language != LANG_FR) s.language = -1;
 }
 
@@ -91,6 +97,9 @@ void SaveSettings(const Settings& s) {
     num(L"DropDuplicates", s.dropDuplicates);
     num(L"DuplicateThreshold", s.dupThreshold);
     num(L"Language", s.language + 1000);
+    num(L"Volume", s.volume);
+    put(L"Monitor", s.monitor);
+    num(L"AutoStart", s.autoStart);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +131,39 @@ static void UpdateSliderLabels() {
     SetWindowTextW(Item(IDC_SAT_V), Format(L"%d %%", SliderPos(IDC_SAT)).c_str());
     SetWindowTextW(Item(IDC_SHARP_V), Format(L"%d", SliderPos(IDC_SHARP)).c_str());
     SetWindowTextW(Item(IDC_DUPTH_V), Format(L"%.1f", SliderPos(IDC_DUPTH) / 10.0).c_str());
+    SetWindowTextW(Item(IDC_VOLUME_V), Format(L"%d %%", SliderPos(IDC_VOLUME)).c_str());
     EnableWindow(Item(IDC_DUPTH), Checked(IDC_DUP));
+}
+
+static std::wstring Lower(std::wstring t) {
+    CharLowerBuffW(&t[0], (DWORD)t.size());
+    return t;
+}
+
+struct MonitorList { std::vector<std::wstring> names; std::vector<std::wstring> labels; int primary = 0; };
+static BOOL CALLBACK AddMonitor(HMONITOR m, HDC, LPRECT, LPARAM lp) {
+    MonitorList* ml = (MonitorList*)lp;
+    MONITORINFOEXW mi{}; mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(m, &mi)) return TRUE;
+    int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    ml->names.push_back(mi.szDevice);
+    ml->labels.push_back(Format(T(STR_MONITOR_ITEM), (int)ml->names.size(), w, h,
+                                (mi.dwFlags & MONITORINFOF_PRIMARY) ? T(STR_PRIMARY) : L""));
+    if (mi.dwFlags & MONITORINFOF_PRIMARY) ml->primary = (int)ml->names.size() - 1;
+    return TRUE;
+}
+
+static void FillMonitors() {
+    MonitorList ml;
+    EnumDisplayMonitors(nullptr, nullptr, AddMonitor, (LPARAM)&ml);
+    g_monitors = ml.names;
+    ComboClear(IDC_MONITOR);
+    int pick = ml.primary;
+    for (size_t i = 0; i < ml.labels.size(); ++i) {
+        ComboAdd(IDC_MONITOR, ml.labels[i]);
+        if (ml.names[i] == g_s.monitor) pick = (int)i;
+    }
+    ComboSet(IDC_MONITOR, pick);
 }
 
 static void FillModes() {
@@ -140,6 +181,7 @@ static void FillModes() {
     if (pick < 0) pick = best >= 0 ? best : (g_modes.empty() ? -1 : 0);
     ComboSet(IDC_FORMAT, pick);
     if (g_modes.empty()) SetStatus(T(STR_NO_MODES));
+    else if (g_modes.size() == 1) SetStatus(T(STR_ONE_FORMAT));
 }
 
 static void FillDevices() {
@@ -162,7 +204,19 @@ static void FillDevices() {
         ComboAdd(IDC_AUDIO, g_audioDevs[i].name);
         if (g_audioDevs[i].id == g_s.audioDevice) apick = (int)i + 1;
     }
+    if (g_s.audioDevice.empty()) {
+        // Never chosen: pick the input that looks like the capture card's own sound.
+        std::wstring video = ComboSel(IDC_VIDEO) >= 0 && !g_videoDevs.empty() ? Lower(g_videoDevs[pick].name) : L"";
+        const wchar_t* hints[] = {L"usb digital audio", L"digital audio interface", L"capture", L"hdmi", L"cam link",
+                                  L"elgato", L"avermedia", L"usb3", L"ugreen", L"video"};
+        for (size_t i = 0; i < g_audioDevs.size() && apick == 0; ++i) {
+            std::wstring n = Lower(g_audioDevs[i].name);
+            for (auto h : hints) if (n.find(h) != std::wstring::npos) { apick = (int)i + 1; break; }
+            if (!apick && video.size() >= 4 && n.find(video) != std::wstring::npos) apick = (int)i + 1;
+        }
+    }
     ComboSet(IDC_AUDIO, apick);
+    FillMonitors();
 
     if (g_videoDevs.empty()) {
         ComboClear(IDC_FORMAT);
@@ -185,6 +239,8 @@ static void ApplySettingsToUi() {
     Check(IDC_EXCL, g_s.exclusive);
     Check(IDC_VSYNC, g_s.vsync);
     Check(IDC_DUP, g_s.dropDuplicates);
+    SliderSet(IDC_VOLUME, 0, 100, g_s.volume);
+    Check(IDC_AUTOSTART, g_s.autoStart);
     UpdateSliderLabels();
 }
 
@@ -194,7 +250,7 @@ static void ReadUiIntoSettings() {
     int fmt = ComboSel(IDC_FORMAT);
     if (fmt >= 0 && fmt < (int)g_modes.size()) g_s.videoMode = g_modes[fmt].label;
     int au = ComboSel(IDC_AUDIO);
-    g_s.audioDevice = (au > 0 && au - 1 < (int)g_audioDevs.size()) ? g_audioDevs[au - 1].id : L"";
+    g_s.audioDevice = (au > 0 && au - 1 < (int)g_audioDevs.size()) ? g_audioDevs[au - 1].id : L"none";
     g_s.range = std::max(0, ComboSel(IDC_RANGE));
     g_s.matrix = std::max(0, ComboSel(IDC_MATRIX));
     g_s.brightness = SliderPos(IDC_BRIGHT);
@@ -205,6 +261,10 @@ static void ReadUiIntoSettings() {
     g_s.vsync = Checked(IDC_VSYNC);
     g_s.dropDuplicates = Checked(IDC_DUP);
     g_s.dupThreshold = SliderPos(IDC_DUPTH);
+    g_s.volume = SliderPos(IDC_VOLUME);
+    g_s.autoStart = Checked(IDC_AUTOSTART);
+    int mon = ComboSel(IDC_MONITOR);
+    if (mon >= 0 && mon < (int)g_monitors.size()) g_s.monitor = g_monitors[mon];
 }
 
 static void Launch() {
@@ -258,8 +318,11 @@ static void BuildUi() {
     Ctl(L"COMBOBOX", L"", combo, 130, y + 60, 382, 300, IDC_FORMAT);
     Ctl(L"STATIC", T(STR_SOUND), 0, 20, y + 98, 100, 20, 0);
     Ctl(L"COMBOBOX", L"", combo, 130, y + 94, 382, 300, IDC_AUDIO);
+    Ctl(L"STATIC", T(STR_VOLUME), 0, 20, y + 132, 100, 20, 0);
+    Ctl(TRACKBAR_CLASSW, L"", slider, 124, y + 128, 330, 28, IDC_VOLUME);
+    Ctl(L"STATIC", L"", SS_RIGHT, 456, y + 132, 56, 20, IDC_VOLUME_V);
 
-    y = 222;
+    y = 256;
     Ctl(L"STATIC", T(STR_SEC_PICTURE), 0, 18, y, 200, 20, 0, g_fontBold);
     Ctl(L"STATIC", T(STR_RANGE), 0, 20, y + 30, 110, 20, 0);
     Ctl(L"COMBOBOX", L"", combo, 130, y + 26, 382, 200, IDC_RANGE);
@@ -276,18 +339,21 @@ static void BuildUi() {
     }
     Ctl(L"BUTTON", T(STR_RESET), BS_PUSHBUTTON | WS_TABSTOP, 130, y + 228, 170, 28, IDC_RESET);
 
-    y = 494;
+    y = 528;
     Ctl(L"STATIC", T(STR_SEC_DISPLAY), 0, 18, y, 200, 20, 0, g_fontBold);
-    Ctl(L"BUTTON", T(STR_EXCLUSIVE), check, 20, y + 26, 492, 22, IDC_EXCL);
-    Ctl(L"BUTTON", T(STR_VSYNC), check, 20, y + 52, 492, 22, IDC_VSYNC);
-    Ctl(L"BUTTON", T(STR_DUPLICATES), check, 20, y + 78, 492, 22, IDC_DUP);
-    Ctl(L"STATIC", T(STR_THRESHOLD), 0, 40, y + 110, 80, 20, 0);
-    Ctl(TRACKBAR_CLASSW, L"", slider, 124, y + 106, 330, 28, IDC_DUPTH);
-    Ctl(L"STATIC", L"", SS_RIGHT, 456, y + 110, 56, 20, IDC_DUPTH_V);
+    Ctl(L"STATIC", T(STR_MONITOR), 0, 20, y + 30, 100, 20, 0);
+    Ctl(L"COMBOBOX", L"", combo, 130, y + 26, 382, 200, IDC_MONITOR);
+    Ctl(L"BUTTON", T(STR_EXCLUSIVE), check, 20, y + 62, 492, 22, IDC_EXCL);
+    Ctl(L"BUTTON", T(STR_VSYNC), check, 20, y + 88, 492, 22, IDC_VSYNC);
+    Ctl(L"BUTTON", T(STR_DUPLICATES), check, 20, y + 114, 492, 22, IDC_DUP);
+    Ctl(L"STATIC", T(STR_THRESHOLD), 0, 40, y + 146, 80, 20, 0);
+    Ctl(TRACKBAR_CLASSW, L"", slider, 124, y + 142, 330, 28, IDC_DUPTH);
+    Ctl(L"STATIC", L"", SS_RIGHT, 456, y + 146, 56, 20, IDC_DUPTH_V);
+    Ctl(L"BUTTON", T(STR_AUTOSTART), check, 20, y + 178, 492, 22, IDC_AUTOSTART);
 
-    Ctl(L"STATIC", L"", SS_LEFT, 20, 648, 492, 40, IDC_STATUS);
-    Ctl(L"BUTTON", T(STR_HELP), BS_PUSHBUTTON | WS_TABSTOP, 20, 698, 90, 34, IDC_HELPBTN);
-    Ctl(L"BUTTON", T(STR_START), BS_DEFPUSHBUTTON | WS_TABSTOP, 332, 698, 180, 34, IDC_START, g_fontBold);
+    Ctl(L"STATIC", L"", SS_LEFT, 20, 744, 492, 56, IDC_STATUS);
+    Ctl(L"BUTTON", T(STR_HELP), BS_PUSHBUTTON | WS_TABSTOP, 20, 808, 90, 34, IDC_HELPBTN);
+    Ctl(L"BUTTON", T(STR_START), BS_DEFPUSHBUTTON | WS_TABSTOP, 332, 808, 180, 34, IDC_START, g_fontBold);
 
     for (StringId r : {STR_RANGE_AUTO, STR_RANGE_LIMITED, STR_RANGE_FULL}) ComboAdd(IDC_RANGE, T(r));
     for (StringId m : {STR_MATRIX_AUTO, STR_MATRIX_601, STR_MATRIX_709}) ComboAdd(IDC_MATRIX, T(m));
@@ -408,7 +474,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show) {
     wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
     RegisterClassW(&wc);
 
-    RECT rc{0, 0, S(532), S(748)};
+    RECT rc{0, 0, S(532), S(858)};
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&rc, style, FALSE);
     g_wnd = CreateWindowExW(0, wc.lpszClassName, L"Relais " RELAIS_VERSION, style, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -418,6 +484,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show) {
     ShowWindow(g_wnd, show);
     UpdateWindow(g_wnd);
     FillDevices();
+    if (g_s.autoStart && !(GetKeyState(VK_SHIFT) & 0x8000) && ComboSel(IDC_FORMAT) >= 0)
+        PostMessageW(g_wnd, WM_COMMAND, MAKEWPARAM(IDC_START, BN_CLICKED), 0);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {

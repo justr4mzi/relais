@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Relais VERSION 1.1.0 LANGUAGES CXX RC)
+project(Relais VERSION 2.0.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,4 +22,4 @@ else()
     target_link_options(relais PRIVATE -municode)
 endif()
 
-target_link_libraries(relais PRIVATE d3d11 dxgi mfplat mf mfreadwrite mfuuid ole32 uuid comctl32 gdi32 user32 shell32)
+target_link_libraries(relais PRIVATE d3d11 dxgi d2d1 dwrite windowscodecs mfplat mf mfreadwrite mfuuid ole32 uuid comctl32 gdi32 user32 shell32)

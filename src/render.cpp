@@ -6,7 +6,14 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <d2d1.h>
+#include <dwrite.h>
 #include <mfapi.h>
+#include <shlobj.h>
+// GUIDs for the screenshot encoder and the Pictures folder are defined here.
+#include <initguid.h>
+#include <wincodec.h>
+#include <knownfolders.h>
 
 #include <cmath>
 #include <cstring>
@@ -141,11 +148,23 @@ static DWORD WINAPI CaptureThread(LPVOID param) {
     return 0;
 }
 
+
 // ---------------------------------------------------------------------------
-// Direct3D 11 renderer
+// Direct3D 11 renderer with a Direct2D overlay for the on-screen display
 // ---------------------------------------------------------------------------
 typedef HRESULT(WINAPI* PFN_Compile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR,
                                      UINT, UINT, ID3DBlob**, ID3DBlob**);
+
+struct MenuItemView { std::wstring name, value; };
+
+// What the on-screen display shows on top of the picture.
+struct OverlayContent {
+    std::wstring toast;                 // short message at the top, empty = none
+    std::vector<std::wstring> stats;    // lines at the top left, empty = hidden
+    bool menu = false;
+    int menuSel = 0;
+    std::vector<MenuItemView> items;
+};
 
 struct Renderer {
     HWND hwnd = nullptr;
@@ -170,6 +189,14 @@ struct Renderer {
     ID3D11Texture2D* rgb = nullptr; ID3D11RenderTargetView* rgbRtv = nullptr; ID3D11ShaderResourceView* rgbSrv = nullptr;
     bool haveFrame = false;
     UINT backW = 0, backH = 0;
+    // overlay
+    ID2D1Factory* d2d = nullptr;
+    IDWriteFactory* dw = nullptr;
+    IDWriteTextFormat* fmtToast = nullptr;
+    IDWriteTextFormat* fmtBody = nullptr;
+    IDWriteTextFormat* fmtTitle = nullptr;
+    ID2D1RenderTarget* rt2d = nullptr;
+    float uiScale = 1.0f;
 
     struct DecodeCB { int layout, fullRange, bt709, pad; };
     struct PictureCB { float brightness, contrast, saturation, sharpness, texelX, texelY, pad0, pad1; };
@@ -180,8 +207,11 @@ struct Renderer {
     bool EnsureInput(const CpuFrame& f);
     void Upload(const CpuFrame& f);
     void Draw(const DecodeCB& d, const PictureCB& p);
+    void DrawOverlay(const OverlayContent& o);
+    bool SaveScreenshot(const PictureCB& p, std::wstring& path);
     void Present() { swap->Present(vsync ? 1 : 0, 0); }
     void Shutdown();
+    void CreateTextFormats();
 };
 
 bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
@@ -206,13 +236,12 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.OutputWindow = hwnd;
     sd.Windowed = TRUE;
+    sd.BufferCount = 2;
     if (exclusive) {
         // Classic swap chain: real exclusive fullscreen, what AFMF wants on RX 6000.
-        sd.BufferCount = 2;
         sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
     } else {
-        sd.BufferCount = 2;
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     }
     hr = factory->CreateSwapChain(dev, &sd, &swap);
@@ -221,13 +250,15 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     if (FAILED(hr)) { err = Format(T(STR_ERR_SWAPCHAIN), hr); return false; }
 
     if (exclusive) {
-        // Keep the desktop resolution and refresh rate: the picture is scaled by the GPU.
+        // Keep the screen's resolution and refresh rate: the picture is scaled by the GPU.
         DXGI_MODE_DESC md{};
         md.Width = sd.BufferDesc.Width;
         md.Height = sd.BufferDesc.Height;
         md.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        MONITORINFOEXW mi{}; mi.cbSize = sizeof(mi);
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);
         DEVMODEW dm{}; dm.dmSize = sizeof(dm);
-        if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) {
+        if (EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) {
             md.RefreshRate.Numerator = dm.dmDisplayFrequency;
             md.RefreshRate.Denominator = 1;
         }
@@ -275,16 +306,47 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     dev->CreateSamplerState(&smp, &sampler);
 
     if (!vs || !psDecode || !psPicture || !cbDecode || !cbPicture || !sampler) { err = T(STR_ERR_DX_INCOMPLETE); return false; }
+
+    // The overlay is optional: if Direct2D is missing, the picture still works.
+    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr, (void**)&d2d);
+    DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&dw);
     return CreateBackbuffer();
+}
+
+void Renderer::CreateTextFormats() {
+    SafeRelease(fmtToast); SafeRelease(fmtBody); SafeRelease(fmtTitle);
+    if (!dw) return;
+    dw->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                         DWRITE_FONT_STRETCH_NORMAL, 22.0f * uiScale, L"", &fmtToast);
+    dw->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                         DWRITE_FONT_STRETCH_NORMAL, 18.0f * uiScale, L"", &fmtBody);
+    dw->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                         DWRITE_FONT_STRETCH_NORMAL, 24.0f * uiScale, L"", &fmtTitle);
+    if (fmtToast) fmtToast->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (fmtBody) fmtBody->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 }
 
 bool Renderer::CreateBackbuffer() {
     SafeRelease(backRtv);
+    SafeRelease(rt2d);
     ID3D11Texture2D* bb = nullptr;
     if (FAILED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) return false;
     D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
     backW = d.Width; backH = d.Height;
     HRESULT hr = dev->CreateRenderTargetView(bb, nullptr, &backRtv);
+    if (d2d) {
+        IDXGISurface* surf = nullptr;
+        if (SUCCEEDED(bb->QueryInterface(__uuidof(IDXGISurface), (void**)&surf))) {
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+            d2d->CreateDxgiSurfaceRenderTarget(surf, &props, &rt2d);
+            surf->Release();
+        }
+        float scale = backH / 1080.0f;
+        if (scale < 0.75f) scale = 0.75f;
+        if (scale != uiScale || !fmtBody) { uiScale = scale; CreateTextFormats(); }
+    }
     bb->Release();
     return SUCCEEDED(hr);
 }
@@ -293,6 +355,8 @@ void Renderer::ResizeBuffers() {
     if (!swap) return;
     ctx->OMSetRenderTargets(0, nullptr, nullptr);
     SafeRelease(backRtv);
+    SafeRelease(rt2d);
+    ctx->Flush();
     swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, exclusive ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH : 0);
     CreateBackbuffer();
 }
@@ -386,8 +450,8 @@ void Renderer::Draw(const DecodeCB& d, const PictureCB& p) {
         ID3D11ShaderResourceView* none[3] = {nullptr, nullptr, nullptr};
         ctx->PSSetShaderResources(0, 3, none);
         float scale = std::fmin((float)backW / w, (float)backH / h);
-        float dw = std::floor(w * scale), dh = std::floor(h * scale);
-        D3D11_VIEWPORT out{std::floor((backW - dw) / 2), std::floor((backH - dh) / 2), dw, dh, 0, 1};
+        float dw_ = std::floor(w * scale), dh_ = std::floor(h * scale);
+        D3D11_VIEWPORT out{std::floor((backW - dw_) / 2), std::floor((backH - dh_) / 2), dw_, dh_, 0, 1};
         ctx->RSSetViewports(1, &out);
         ctx->OMSetRenderTargets(1, &backRtv, nullptr);
         ctx->PSSetShader(psPicture, nullptr, 0);
@@ -401,9 +465,160 @@ void Renderer::Draw(const DecodeCB& d, const PictureCB& p) {
     }
 }
 
+static D2D1_ROUNDED_RECT RoundRect(float l, float t, float r, float b, float radius) {
+    return D2D1::RoundedRect(D2D1::RectF(l, t, r, b), radius, radius);
+}
+
+void Renderer::DrawOverlay(const OverlayContent& o) {
+    if (!rt2d || !fmtBody || !fmtToast || !fmtTitle) return;
+    if (o.toast.empty() && o.stats.empty() && !o.menu) return;
+    const float s = uiScale;
+    ID2D1SolidColorBrush *bg = nullptr, *text = nullptr, *dim = nullptr, *sel = nullptr;
+    rt2d->CreateSolidColorBrush(D2D1::ColorF(0.05f, 0.06f, 0.08f, 0.82f), &bg);
+    rt2d->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &text);
+    rt2d->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.72f, 0.78f, 1.0f), &dim);
+    rt2d->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), &sel);
+    if (!bg || !text || !dim || !sel) { SafeRelease(bg); SafeRelease(text); SafeRelease(dim); SafeRelease(sel); return; }
+
+    rt2d->BeginDraw();
+    const float W = (float)backW;
+
+    if (!o.toast.empty()) {
+        IDWriteTextLayout* tl = nullptr;
+        dw->CreateTextLayout(o.toast.c_str(), (UINT32)o.toast.size(), fmtToast, W, 200.0f * s, &tl);
+        if (tl) {
+            DWRITE_TEXT_METRICS m{}; tl->GetMetrics(&m);
+            float padX = 24 * s, padY = 12 * s;
+            float left = (W - m.width) / 2 - padX, top = 36 * s;
+            rt2d->FillRoundedRectangle(RoundRect(left, top, left + m.width + 2 * padX, top + m.height + 2 * padY, 14 * s), bg);
+            rt2d->DrawTextLayout(D2D1::Point2F(left + padX - m.left, top + padY), tl, text);
+            tl->Release();
+        }
+    }
+
+    if (!o.stats.empty()) {
+        float lineH = 28 * s, pad = 16 * s, width = 560 * s;
+        float height = pad * 2 + lineH * o.stats.size();
+        float left = 28 * s, top = 28 * s;
+        rt2d->FillRoundedRectangle(RoundRect(left, top, left + width, top + height, 12 * s), bg);
+        for (size_t i = 0; i < o.stats.size(); ++i) {
+            const std::wstring& line = o.stats[i];
+            rt2d->DrawText(line.c_str(), (UINT32)line.size(), fmtBody,
+                           D2D1::RectF(left + pad, top + pad + lineH * i, left + width - pad, top + pad + lineH * (i + 1)),
+                           i == 0 ? text : dim);
+        }
+    }
+
+    if (o.menu) {
+        float rowH = 40 * s, pad = 22 * s, width = 520 * s;
+        float height = pad * 2 + 44 * s + rowH * o.items.size() + 40 * s;
+        float left = 48 * s, top = (backH - height) / 2;
+        rt2d->FillRoundedRectangle(RoundRect(left, top, left + width, top + height, 16 * s), bg);
+        const std::wstring title = T(STR_OSD_TITLE);
+        rt2d->DrawText(title.c_str(), (UINT32)title.size(), fmtTitle,
+                       D2D1::RectF(left + pad, top + pad, left + width - pad, top + pad + 40 * s), text);
+        float y = top + pad + 44 * s;
+        for (size_t i = 0; i < o.items.size(); ++i) {
+            if ((int)i == o.menuSel)
+                rt2d->FillRoundedRectangle(RoundRect(left + pad / 2, y, left + width - pad / 2, y + rowH, 8 * s), sel);
+            const auto& it = o.items[i];
+            rt2d->DrawText(it.name.c_str(), (UINT32)it.name.size(), fmtBody,
+                           D2D1::RectF(left + pad, y + 8 * s, left + width * 0.55f, y + rowH), (int)i == o.menuSel ? text : dim);
+            std::wstring value = (int)i == o.menuSel ? L"‹  " + it.value + L"  ›" : it.value;
+            rt2d->DrawText(value.c_str(), (UINT32)value.size(), fmtBody,
+                           D2D1::RectF(left + width * 0.55f, y + 8 * s, left + width - pad, y + rowH), text);
+            y += rowH;
+        }
+        const std::wstring hint = T(STR_OSD_MENU_HINT);
+        rt2d->DrawText(hint.c_str(), (UINT32)hint.size(), fmtBody,
+                       D2D1::RectF(left + pad, y + 10 * s, left + width - pad, y + 40 * s), dim);
+    }
+
+    if (rt2d->EndDraw() == D2DERR_RECREATE_TARGET) SafeRelease(rt2d);
+    SafeRelease(bg); SafeRelease(text); SafeRelease(dim); SafeRelease(sel);
+}
+
+// Renders the current picture (with the picture settings, without the overlay)
+// at the capture resolution and writes it as a PNG in Pictures\Relais.
+bool Renderer::SaveScreenshot(const PictureCB& p, std::wstring& path) {
+    if (!haveFrame || !rgbSrv) return false;
+    ID3D11Texture2D* target = nullptr; ID3D11RenderTargetView* rtv = nullptr; ID3D11Texture2D* staging = nullptr;
+    D3D11_TEXTURE2D_DESC d{};
+    d.Width = w; d.Height = h; d.MipLevels = 1; d.ArraySize = 1;
+    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_DEFAULT;
+    d.BindFlags = D3D11_BIND_RENDER_TARGET;
+    bool ok = SUCCEEDED(dev->CreateTexture2D(&d, nullptr, &target)) && SUCCEEDED(dev->CreateRenderTargetView(target, nullptr, &rtv));
+    d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ok = ok && SUCCEEDED(dev->CreateTexture2D(&d, nullptr, &staging));
+    std::vector<BYTE> pixels;
+    if (ok) {
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ctx->Map(cbPicture, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { memcpy(m.pData, &p, sizeof(p)); ctx->Unmap(cbPicture, 0); }
+        D3D11_VIEWPORT vp{0, 0, (float)w, (float)h, 0, 1};
+        ctx->RSSetViewports(1, &vp);
+        ctx->OMSetRenderTargets(1, &rtv, nullptr);
+        ctx->VSSetShader(vs, nullptr, 0);
+        ctx->PSSetShader(psPicture, nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, &rgbSrv);
+        ctx->PSSetSamplers(0, 1, &sampler);
+        ctx->PSSetConstantBuffers(0, 1, &cbPicture);
+        ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* none = nullptr;
+        ctx->PSSetShaderResources(0, 1, &none);
+        ctx->CopyResource(staging, target);
+        if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+            pixels.resize((size_t)w * h * 4);
+            for (UINT32 y = 0; y < h; ++y) {
+                const BYTE* src = (const BYTE*)m.pData + (size_t)y * m.RowPitch;
+                BYTE* dst = &pixels[(size_t)y * w * 4];
+                for (UINT32 x = 0; x < w; ++x) {   // RGBA -> BGRA, opaque
+                    dst[x * 4 + 0] = src[x * 4 + 2];
+                    dst[x * 4 + 1] = src[x * 4 + 1];
+                    dst[x * 4 + 2] = src[x * 4 + 0];
+                    dst[x * 4 + 3] = 255;
+                }
+            }
+            ctx->Unmap(staging, 0);
+        } else ok = false;
+    }
+    SafeRelease(staging); SafeRelease(rtv); SafeRelease(target);
+    if (!ok || pixels.empty()) return false;
+
+    PWSTR pictures = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &pictures))) return false;
+    std::wstring dir = std::wstring(pictures) + L"\\Relais";
+    CoTaskMemFree(pictures);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    SYSTEMTIME t; GetLocalTime(&t);
+    path = dir + Format(L"\\Relais_%04d-%02d-%02d_%02d-%02d-%02d.png", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+
+    IWICImagingFactory* wic = nullptr; IWICStream* stream = nullptr; IWICBitmapEncoder* enc = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory), (void**)&wic);
+    if (SUCCEEDED(hr)) hr = wic->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+    if (SUCCEEDED(hr)) hr = wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+    if (SUCCEEDED(hr)) hr = enc->Initialize(stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = enc->CreateNewFrame(&frame, nullptr);
+    if (SUCCEEDED(hr)) hr = frame->Initialize(nullptr);
+    if (SUCCEEDED(hr)) hr = frame->SetSize(w, h);
+    WICPixelFormatGUID pf = GUID_WICPixelFormat32bppBGRA;
+    if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&pf);
+    if (SUCCEEDED(hr)) hr = frame->WritePixels(h, w * 4, (UINT)pixels.size(), pixels.data());
+    if (SUCCEEDED(hr)) hr = frame->Commit();
+    if (SUCCEEDED(hr)) hr = enc->Commit();
+    SafeRelease(frame); SafeRelease(enc); SafeRelease(stream); SafeRelease(wic);
+    return SUCCEEDED(hr);
+}
+
 void Renderer::Shutdown() {
     if (swap) swap->SetFullscreenState(FALSE, nullptr);
     if (ctx) { ctx->ClearState(); ctx->Flush(); }
+    SafeRelease(rt2d);
+    SafeRelease(fmtToast); SafeRelease(fmtBody); SafeRelease(fmtTitle);
+    SafeRelease(dw); SafeRelease(d2d);
     SafeRelease(srv0); SafeRelease(tex0); SafeRelease(srv1); SafeRelease(tex1);
     SafeRelease(rgbSrv); SafeRelease(rgbRtv); SafeRelease(rgb);
     SafeRelease(sampler); SafeRelease(cbPicture); SafeRelease(cbDecode);
@@ -412,16 +627,94 @@ void Renderer::Shutdown() {
 }
 
 // ---------------------------------------------------------------------------
-// Viewer window
+// Viewer window, hotkeys and the settings menu
 // ---------------------------------------------------------------------------
+enum MenuItem { MI_RANGE, MI_MATRIX, MI_BRIGHT, MI_CONTRAST, MI_SAT, MI_SHARP, MI_DUP, MI_THRESH, MI_VSYNC, MI_VOLUME, MI_COUNT };
+
 struct ViewerState {
     Settings* s = nullptr;
     Shared* sh = nullptr;
     Renderer* r = nullptr;
+    AudioPassthrough* audio = nullptr;
     bool quit = false;
     bool resize = false;
     bool redraw = false;
+    bool menu = false;
+    int menuSel = 0;
+    bool stats = false;
+    bool screenshot = false;
+    std::wstring toast;
+    ULONGLONG toastUntil = 0;
+    // colour settings actually used (Auto resolved)
+    int fullRange = 1, bt709 = 1;
 };
+
+static void Toast(ViewerState* st, const std::wstring& text, DWORD ms = 1600) {
+    st->toast = text;
+    st->toastUntil = GetTickCount64() + ms;
+    st->redraw = true;
+}
+
+static std::wstring RangeName(const ViewerState* st) {
+    std::wstring resolved = st->fullRange ? T(STR_SHORT_FULL) : T(STR_SHORT_LIMITED);
+    switch (st->s->range) {
+    case RANGE_LIMITED: return T(STR_SHORT_LIMITED);
+    case RANGE_FULL: return T(STR_SHORT_FULL);
+    default: return std::wstring(T(STR_RANGE_AUTO)) + L" (" + resolved + L")";
+    }
+}
+
+static std::wstring MatrixName(const ViewerState* st) {
+    std::wstring resolved = st->bt709 ? L"BT.709" : L"BT.601";
+    switch (st->s->matrix) {
+    case MATRIX_601: return L"BT.601";
+    case MATRIX_709: return L"BT.709";
+    default: return std::wstring(T(STR_MATRIX_AUTO)) + L" (" + resolved + L")";
+    }
+}
+
+static MenuItemView MenuView(const ViewerState* st, int item) {
+    const Settings& s = *st->s;
+    switch (item) {
+    case MI_RANGE: return {T(STR_RANGE), RangeName(st)};
+    case MI_MATRIX: return {T(STR_MATRIX), MatrixName(st)};
+    case MI_BRIGHT: return {T(STR_BRIGHTNESS), Format(L"%+d", s.brightness)};
+    case MI_CONTRAST: return {T(STR_CONTRAST), Format(L"%d %%", s.contrast)};
+    case MI_SAT: return {T(STR_SATURATION), Format(L"%d %%", s.saturation)};
+    case MI_SHARP: return {T(STR_SHARPNESS), Format(L"%d", s.sharpness)};
+    case MI_DUP: return {T(STR_SKIP_SHORT), s.dropDuplicates ? T(STR_ON) : T(STR_OFF)};
+    case MI_THRESH: return {T(STR_THRESHOLD), Format(L"%.1f", s.dupThreshold / 10.0)};
+    case MI_VSYNC: return {L"VSync", s.vsync ? T(STR_ON) : T(STR_OFF)};
+    case MI_VOLUME: return {T(STR_VOLUME), Format(L"%d %%", s.volume)};
+    }
+    return {};
+}
+
+// Changes one setting by one step (dir = -1 or +1) and applies it right away.
+static void Adjust(ViewerState* st, int item, int dir) {
+    Settings& s = *st->s;
+    auto clamp = [](int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; };
+    switch (item) {
+    case MI_RANGE: s.range = (s.range + 3 + dir) % 3; break;
+    case MI_MATRIX: s.matrix = (s.matrix + 3 + dir) % 3; break;
+    case MI_BRIGHT: s.brightness = clamp(s.brightness + 5 * dir, -100, 100); break;
+    case MI_CONTRAST: s.contrast = clamp(s.contrast + 5 * dir, 0, 200); break;
+    case MI_SAT: s.saturation = clamp(s.saturation + 5 * dir, 0, 200); break;
+    case MI_SHARP: s.sharpness = clamp(s.sharpness + 5 * dir, 0, 100); break;
+    case MI_DUP: s.dropDuplicates = !s.dropDuplicates; st->sh->dropDuplicates = s.dropDuplicates; break;
+    case MI_THRESH: s.dupThreshold = clamp(s.dupThreshold + dir, 1, 60); st->sh->dupThreshold = s.dupThreshold; break;
+    case MI_VSYNC: s.vsync = !s.vsync; st->r->vsync = s.vsync; break;
+    case MI_VOLUME: s.volume = clamp(s.volume + 5 * dir, 0, 100); st->audio->SetVolume(s.volume / 100.0f); break;
+    }
+    st->redraw = true;
+}
+
+// Hotkeys outside the menu show what they changed for a moment.
+static void QuickChange(ViewerState* st, int item, int dir) {
+    Adjust(st, item, dir);
+    MenuItemView v = MenuView(st, item);
+    Toast(st, v.name + L" : " + v.value);
+}
 
 static LRESULT CALLBACK ViewerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     ViewerState* st = (ViewerState*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -437,17 +730,29 @@ static LRESULT CALLBACK ViewerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_KEYDOWN:
         if (!st) break;
+        if (st->menu) {
+            switch (wp) {
+            case VK_UP: st->menuSel = (st->menuSel + MI_COUNT - 1) % MI_COUNT; st->redraw = true; break;
+            case VK_DOWN: st->menuSel = (st->menuSel + 1) % MI_COUNT; st->redraw = true; break;
+            case VK_LEFT: Adjust(st, st->menuSel, -1); break;
+            case VK_RIGHT: case VK_RETURN: case VK_SPACE: Adjust(st, st->menuSel, +1); break;
+            case VK_ESCAPE: case VK_F2: case VK_TAB: st->menu = false; st->redraw = true; break;
+            case VK_F1: st->stats = !st->stats; st->redraw = true; break;
+            case VK_F12: st->screenshot = true; break;
+            }
+            return 0;
+        }
         switch (wp) {
         case VK_ESCAPE: st->quit = true; break;
-        case 'D':
-            st->s->dropDuplicates = !st->s->dropDuplicates;
-            st->sh->dropDuplicates = st->s->dropDuplicates;
-            break;
-        case 'R': st->s->range = (st->s->range + 1) % 3; st->redraw = true; break;
-        case 'M': st->s->matrix = (st->s->matrix + 1) % 3; st->redraw = true; break;
-        case 'V': st->s->vsync = !st->s->vsync; st->r->vsync = st->s->vsync; break;
-        case VK_OEM_PLUS: case VK_ADD: st->s->brightness = std::min(100, st->s->brightness + 5); st->redraw = true; break;
-        case VK_OEM_MINUS: case VK_SUBTRACT: st->s->brightness = std::max(-100, st->s->brightness - 5); st->redraw = true; break;
+        case VK_F2: case VK_TAB: st->menu = true; st->toast.clear(); st->redraw = true; break;
+        case VK_F1: st->stats = !st->stats; st->redraw = true; break;
+        case VK_F12: st->screenshot = true; break;
+        case 'D': QuickChange(st, MI_DUP, +1); break;
+        case 'R': QuickChange(st, MI_RANGE, +1); break;
+        case 'M': QuickChange(st, MI_MATRIX, +1); break;
+        case 'V': QuickChange(st, MI_VSYNC, +1); break;
+        case VK_OEM_PLUS: case VK_ADD: QuickChange(st, MI_BRIGHT, +1); break;
+        case VK_OEM_MINUS: case VK_SUBTRACT: QuickChange(st, MI_BRIGHT, -1); break;
         }
         return 0;
     case WM_CLOSE:
@@ -455,6 +760,23 @@ static LRESULT CALLBACK ViewerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+struct MonitorSearch { const std::wstring* name; HMONITOR found; };
+static BOOL CALLBACK FindMonitorProc(HMONITOR m, HDC, LPRECT, LPARAM lp) {
+    MonitorSearch* ms = (MonitorSearch*)lp;
+    MONITORINFOEXW mi{}; mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(m, &mi) && *ms->name == mi.szDevice) { ms->found = m; return FALSE; }
+    return TRUE;
+}
+
+static HMONITOR PickMonitor(const Settings& s) {
+    if (!s.monitor.empty()) {
+        MonitorSearch ms{&s.monitor, nullptr};
+        EnumDisplayMonitors(nullptr, nullptr, FindMonitorProc, (LPARAM)&ms);
+        if (ms.found) return ms.found;
+    }
+    return MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
 }
 
 SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
@@ -484,11 +806,8 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
         return stats;
     }
 
-    // Window on the monitor where the launcher is (hidden, but it keeps its position).
-    HWND launcher = FindWindowW(L"RelaisMain", nullptr);
-    HMONITOR mon = launcher ? MonitorFromWindow(launcher, MONITOR_DEFAULTTOPRIMARY) : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO mi{sizeof(mi)};
-    GetMonitorInfoW(mon, &mi);
+    GetMonitorInfoW(PickMonitor(s), &mi);
     WNDCLASSW wc{};
     wc.lpfnWndProc = ViewerProc;
     wc.hInstance = inst;
@@ -499,8 +818,10 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
 
     Renderer r;
     r.vsync = s.vsync;
+    AudioPassthrough audio;
+    audio.SetVolume(s.volume / 100.0f);
     ViewerState st;
-    st.s = &s; st.sh = &sh; st.r = &r;
+    st.s = &s; st.sh = &sh; st.r = &r; st.audio = &audio;
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Relais", WS_POPUP | WS_VISIBLE,
                                 mi.rcMonitor.left, mi.rcMonitor.top,
                                 mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
@@ -508,21 +829,24 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
     SetForegroundWindow(hwnd);
 
     std::wstring err;
-    AudioPassthrough audio;
     bool ok = r.Init(hwnd, s.exclusive, err);
-    if (ok && !s.audioDevice.empty()) {
+    if (ok && !s.audioDevice.empty() && s.audioDevice != L"none") {
         std::wstring aerr;
         if (!audio.Start(s.audioDevice, aerr)) stats.error = std::wstring(T(STR_ERR_SOUND)) + aerr;
     }
     if (!ok) stats.error = err;
+    Toast(&st, T(STR_OSD_HINT), 4000);
 
     CpuFrame frame;
     LARGE_INTEGER freq, t0, t1;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
+    ULONGLONG lastFresh = 0, rateTick = GetTickCount64();
+    unsigned long long rateCap = 0, rateShown = 0, rateDup = 0;
+    double capRate = 0, shownRate = 0, dupRate = 0;
 
     while (ok && !st.quit) {
-        MsgWaitForMultipleObjects(1, &sh.frameEvent, FALSE, 100, QS_ALLINPUT);
+        MsgWaitForMultipleObjects(1, &sh.frameEvent, FALSE, 50, QS_ALLINPUT);
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) st.quit = true;
@@ -533,26 +857,35 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
         if (sh.failed) { stats.error = sh.error; break; }
         if (st.resize) { st.resize = false; r.ResizeBuffers(); st.redraw = true; }
 
+        ULONGLONG now = GetTickCount64();
+        if (now - rateTick >= 1000) {
+            double dt = (now - rateTick) / 1000.0;
+            unsigned long long c = sh.captured, d = sh.duplicates;
+            capRate = (c - rateCap) / dt; dupRate = (d - rateDup) / dt; shownRate = (stats.presented - rateShown) / dt;
+            rateCap = c; rateDup = d; rateShown = stats.presented; rateTick = now;
+        }
+        // The overlay only forces an extra frame when the picture is still, so it never
+        // adds repeated frames to a moving picture (that would confuse frame generation).
+        bool still = now - lastFresh > 120;
+        if (!st.toast.empty() && now >= st.toastUntil) { st.toast.clear(); if (still) st.redraw = true; }
+        if (st.stats && still && now - rateTick < 60) st.redraw = true;
+
         bool fresh = false;
         EnterCriticalSection(&sh.lock);
         if (sh.hasPending) { std::swap(frame, sh.pending); sh.hasPending = false; fresh = true; }
         LeaveCriticalSection(&sh.lock);
-        if (fresh) r.Upload(frame);
-        if (!fresh && !st.redraw) continue;
-        st.redraw = false;
+        if (fresh) { r.Upload(frame); lastFresh = now; }
 
         // Resolve "Auto" colour settings from what the card reports.
-        Renderer::DecodeCB d{};
-        d.layout = (int)r.layout;
-        if (s.range == RANGE_FULL) d.fullRange = 1;
-        else if (s.range == RANGE_LIMITED) d.fullRange = 0;
-        else if (r.layout == PixelLayout::RGB32) d.fullRange = 1;
-        else if (sh.typeKnowsRange) d.fullRange = sh.typeFullRange ? 1 : 0;
-        else d.fullRange = sh.sourceIsMjpeg ? 1 : 0;   // JPEG is full range
-        if (s.matrix == MATRIX_709) d.bt709 = 1;
-        else if (s.matrix == MATRIX_601) d.bt709 = 0;
-        else if (sh.typeKnowsMatrix) d.bt709 = sh.typeIs709 ? 1 : 0;
-        else d.bt709 = sh.sourceIsMjpeg ? 0 : (r.h >= 720 ? 1 : 0);  // JPEG uses BT.601
+        if (s.range == RANGE_FULL) st.fullRange = 1;
+        else if (s.range == RANGE_LIMITED) st.fullRange = 0;
+        else if (r.layout == PixelLayout::RGB32) st.fullRange = 1;
+        else if (sh.typeKnowsRange) st.fullRange = sh.typeFullRange ? 1 : 0;
+        else st.fullRange = sh.sourceIsMjpeg ? 1 : 0;   // JPEG is full range
+        if (s.matrix == MATRIX_709) st.bt709 = 1;
+        else if (s.matrix == MATRIX_601) st.bt709 = 0;
+        else if (sh.typeKnowsMatrix) st.bt709 = sh.typeIs709 ? 1 : 0;
+        else st.bt709 = sh.sourceIsMjpeg ? 0 : (r.h >= 720 ? 1 : 0);  // JPEG uses BT.601
 
         Renderer::PictureCB p{};
         p.brightness = s.brightness / 200.0f;
@@ -562,7 +895,34 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
         p.texelX = r.w ? 1.0f / r.w : 0.0f;
         p.texelY = r.h ? 1.0f / r.h : 0.0f;
 
+        if (st.screenshot) {
+            st.screenshot = false;
+            std::wstring path;
+            Toast(&st, r.SaveScreenshot(p, path) ? T(STR_SCREENSHOT_SAVED) : T(STR_SCREENSHOT_FAILED), 2500);
+        }
+        if (!fresh && !st.redraw) continue;
+        st.redraw = false;
+
+        Renderer::DecodeCB d{};
+        d.layout = (int)r.layout;
+        d.fullRange = st.fullRange;
+        d.bt709 = st.bt709;
         r.Draw(d, p);
+
+        OverlayContent o;
+        o.toast = st.toast;
+        if (st.stats) {
+            const wchar_t* sub = r.layout == PixelLayout::NV12 ? L"NV12" : r.layout == PixelLayout::YUY2 ? L"YUY2" : L"RGB32";
+            std::wstring src = mode.subtype == MFVideoFormat_MJPG ? std::wstring(L"MJPG → ") + sub : std::wstring(sub);
+            o.stats.push_back(Format(T(STR_STATS_SOURCE), r.w, r.h, src.c_str(), mode.fps()));
+            o.stats.push_back(Format(T(STR_STATS_RATES), capRate, shownRate, dupRate));
+            o.stats.push_back(Format(T(STR_STATS_COLOUR), RangeName(&st).c_str(), MatrixName(&st).c_str()));
+        }
+        o.menu = st.menu;
+        o.menuSel = st.menuSel;
+        if (st.menu) for (int i = 0; i < MI_COUNT; ++i) o.items.push_back(MenuView(&st, i));
+        r.DrawOverlay(o);
+
         r.Present();
         if (fresh) ++stats.presented;
     }

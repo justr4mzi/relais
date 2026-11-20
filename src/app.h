@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#define RELAIS_VERSION L"1.1.0"
+#define RELAIS_VERSION L"2.0.0"
 
 // ---------------------------------------------------------------------------
 // Settings (saved in %APPDATA%\Relais\relais.ini)
@@ -46,6 +46,9 @@ struct Settings {
     bool dropDuplicates = true; // skip repeated frames (30 fps games captured at 60 fps)
     int dupThreshold = 15;      // tenths of a grey level of mean difference
     int language = -1;          // -1 = not chosen yet (asked on first launch), 0 = English, 1 = French
+    int volume = 100;           // 0 .. 100 (%)
+    std::wstring monitor;       // GDI device name (\\.\DISPLAY1), empty = main screen
+    bool autoStart = false;     // go fullscreen as soon as the app opens
 };
 
 void LoadSettings(Settings& s);
@@ -117,7 +120,9 @@ public:
     ~AudioPassthrough() { Stop(); }
     bool Start(const std::wstring& endpointId, std::wstring& error);
     void Stop();
+    void SetVolume(float v) { volume_ = v; }
 private:
+    std::atomic<float> volume_{1.0f};
     static DWORD WINAPI ThreadProc(LPVOID self);
     void Run();
     HANDLE thread_ = nullptr;

@@ -4,8 +4,8 @@
 1 RT_MANIFEST "relais.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,1,0,0
-PRODUCTVERSION 1,1,0,0
+FILEVERSION 2,0,0,0
+PRODUCTVERSION 2,0,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -14,9 +14,9 @@ BEGIN
     BLOCK "040C04B0"
     BEGIN
       VALUE "FileDescription", "Relais - low-latency capture card viewer"
-      VALUE "FileVersion", "1.1.0"
+      VALUE "FileVersion", "2.0.0"
       VALUE "ProductName", "Relais"
-      VALUE "ProductVersion", "1.1.0"
+      VALUE "ProductVersion", "2.0.0"
       VALUE "LegalCopyright", "MIT License"
       VALUE "OriginalFilename", "relais.exe"
     END

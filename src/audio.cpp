@@ -148,6 +148,12 @@ void AudioPassthrough::Run() {
                     BYTE* dst = nullptr;
                     if (toWrite && SUCCEEDED(render->GetBuffer(toWrite, &dst))) {
                         memcpy(dst, from, (size_t)toWrite * frameBytes);
+                        float vol = volume_;
+                        if (vol < 0.999f) {
+                            float* f = (float*)dst;
+                            size_t n = (size_t)toWrite * frameBytes / sizeof(float);
+                            for (size_t k = 0; k < n; ++k) f[k] *= vol;
+                        }
                         render->ReleaseBuffer(toWrite, 0);
                         if (!started) { client->Start(); started = true; }
                     }
