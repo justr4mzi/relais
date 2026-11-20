@@ -1,6 +1,7 @@
 // Relais - audio passthrough: capture card audio input -> default speakers (WASAPI)
 // SPDX-License-Identifier: MIT
 #include "app.h"
+#include "i18n.h"
 
 #include <mfapi.h>
 #include <mfidl.h>
@@ -22,9 +23,9 @@ bool AudioPassthrough::Start(const std::wstring& endpointId, std::wstring& error
     error_.clear();
     ready_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
-    if (!thread_) { CloseHandle(ready_); ready_ = nullptr; error = L"Impossible de démarrer le son."; return false; }
+    if (!thread_) { CloseHandle(ready_); ready_ = nullptr; error = T(STR_ERR_AUDIO_THREAD); return false; }
     WaitForSingleObject(ready_, 5000);
-    if (!ok_) { error = error_.empty() ? L"Le son n'a pas pu démarrer." : error_; Stop(); return false; }
+    if (!ok_) { error = error_.empty() ? T(STR_ERR_AUDIO_START) : error_; Stop(); return false; }
     return true;
 }
 
@@ -71,13 +72,13 @@ void AudioPassthrough::Run() {
         hr = MFCreateDeviceSource(attr, &src);
     }
     SafeRelease(attr);
-    if (FAILED(hr)) { fail(L"Impossible d'ouvrir l'entrée audio", hr); goto done; }
+    if (FAILED(hr)) { fail(T(STR_ERR_AUDIO_OPEN), hr); goto done; }
 
     MFCreateAttributes(&attr, 1);
     attr->SetUINT32(MF_LOW_LATENCY, TRUE);
     hr = MFCreateSourceReaderFromMediaSource(src, attr, &reader);
     SafeRelease(attr);
-    if (FAILED(hr)) { fail(L"Impossible de lire l'entrée audio", hr); goto done; }
+    if (FAILED(hr)) { fail(T(STR_ERR_AUDIO_READ), hr); goto done; }
 
     {
         // Ask for 32-bit float, keeping the native rate and channel count.
@@ -99,11 +100,11 @@ void AudioPassthrough::Run() {
         t->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, rate * channels * 4);
         hr = reader->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, t);
         t->Release();
-        if (FAILED(hr)) { fail(L"Format audio non pris en charge", hr); goto done; }
+        if (FAILED(hr)) { fail(T(STR_ERR_AUDIO_FORMAT), hr); goto done; }
         IMFMediaType* cur = nullptr;
         hr = reader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, &cur);
         if (SUCCEEDED(hr)) { hr = MFCreateWaveFormatExFromMFMediaType(cur, &wfx, &wfxSize, 0); cur->Release(); }
-        if (FAILED(hr)) { fail(L"Format audio illisible", hr); goto done; }
+        if (FAILED(hr)) { fail(T(STR_ERR_AUDIO_FORMAT2), hr); goto done; }
     }
 
     // --- render side: default speakers, shared mode, Windows converts the rate if needed
@@ -118,7 +119,7 @@ void AudioPassthrough::Run() {
     }
     if (SUCCEEDED(hr)) hr = client->GetBufferSize(&bufferFrames);
     if (SUCCEEDED(hr)) hr = client->GetService(__uuidof(IAudioRenderClient), (void**)&render);
-    if (FAILED(hr)) { fail(L"Impossible d'ouvrir les haut-parleurs", hr); goto done; }
+    if (FAILED(hr)) { fail(T(STR_ERR_SPEAKERS), hr); goto done; }
 
     ok_ = true;
     SetEvent(ready_);

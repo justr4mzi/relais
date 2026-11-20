@@ -1,17 +1,21 @@
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png"><img src="docs/logo.png" width="420" alt="Relais"></picture></p>
+<p align="center"><img src="docs/icon.png" width="128" alt=""></p>
+
+<h1 align="center">Relais</h1>
+
+<p align="center">Play your console on your PC screen, with as little delay as possible.</p>
 
 Relais is a small Windows app that shows a capture card (Xbox, PlayStation, Switch, any HDMI source) in fullscreen with as little delay as possible, so you can play a console on a PC monitor. It was made to put **frame generation** on console games: the picture is shown by a real Direct3D 11 exclusive-fullscreen window, which is what AMD Fluid Motion Frames (AFMF) needs on Radeon RX 6000 cards, and it can skip the repeated frames of a 30 FPS game captured at 60 FPS so the frame generator gets a clean 30 FPS cadence to double.
 
-The interface is in French. It is a single `.exe` with no installer and no dependencies (Windows 10 or 11, 64-bit).
+The interface is in English and French: Relais asks on first launch, and you can switch at any time from the menu at the top right. It is a single `.exe` with no installer and no dependencies (Windows 10 or 11, 64-bit).
 
 > [!NOTE]
-> First release. AFMF is a driver feature, and AMD does not document whether it accepts a capture viewer. Relais does everything the driver asks for (DirectX 11, exclusive fullscreen, a steady frame rate), but it needs testing on real hardware. Reports are welcome in the issues.
+> Tested on a Radeon RX 6700 XT with an Xbox Series and a USB capture stick: AFMF turns on with Relais in exclusive fullscreen. With a 30 FPS base, fast camera moves show visible artifacts, because AFMF only sees the final picture and has to guess the motion. A 60 FPS source gives much cleaner results.
 
 ---
 
 ## Features
 
-- **Low latency**: the frame goes from the card to the screen with no buffering. Capture runs on its own high-priority thread, Media Foundation is opened in low-latency mode, and YUV frames (NV12, YUY2) are uploaded as they are and converted to RGB on the GPU.
+- **Low latency**: the frame goes from the card to the screen with no buffering. Capture runs on its own high-priority thread, Media Foundation is opened in low-latency mode, and YUV frames (NV12, YUY2) are uploaded as they are and converted to RGB on the GPU, with the half-resolution colour planes smoothly interpolated.
 - **Choose the card and its format**: every video device and every resolution / frame rate / pixel format it offers (MJPG, NV12, YUY2...). 1080p at 60 FPS is picked by default.
 - **Sound**: plays the card's audio input on your default speakers with about 30 ms of buffer, dropping old audio instead of drifting behind.
 - **Colours**: range (Auto, Limited 16-235, Full 0-255) and matrix (Auto, BT.601, BT.709) to fix grey blacks or crushed blacks, plus brightness, contrast, saturation and sharpness, all done in a shader.
@@ -23,48 +27,48 @@ The interface is in French. It is a single `.exe` with no installer and no depen
 
 1. Download `relais.exe` from the [Releases](../../releases) page.
 2. Plug in the capture card, close OBS, Discord or any app that uses it.
-3. Run `relais.exe`, pick the card, the format and the sound input, then click **Lancer**.
-4. Press **Échap** to come back to the window.
+3. Run `relais.exe`, pick the card, the format and the sound input, then click **Start**.
+4. Press **Esc** to come back to the window.
 
-Windows SmartScreen may warn about an unknown publisher the first time: click "Informations complémentaires", then "Exécuter quand même".
+Windows SmartScreen may warn about an unknown publisher the first time: click "More info", then "Run anyway".
 
 ## Frame generation
 
 ### AFMF (AMD Radeon RX 6000 and newer)
 
 1. In AMD Software: Adrenalin Edition, open **Gaming > Graphics** and turn on **AMD Fluid Motion Frames**. On RX 6000 cards AFMF only works in exclusive fullscreen.
-2. In Relais, keep **Plein écran exclusif** checked.
-3. For a game that runs at 30 FPS on the console, capture at 60 FPS and keep **Ignorer les images en double** checked: Relais then shows 30 new frames per second and AFMF brings it to 60.
+2. In Relais, keep **Exclusive fullscreen** checked.
+3. For a game that runs at 30 FPS on the console, capture at 60 FPS and keep **Skip duplicate frames** checked: Relais then shows 30 new frames per second and AFMF brings it to 60.
 4. Check that AFMF is active with the Adrenalin overlay (Ctrl+Shift+O).
 
 ### Lossless Scaling
 
-Uncheck **Plein écran exclusif** to get a borderless window, then use Lossless Scaling's frame generation (LSFG) on the Relais window. Keep duplicate skipping on for 30 FPS games.
+Uncheck **Exclusive fullscreen** to get a borderless window, then use Lossless Scaling's frame generation (LSFG) on the Relais window. Keep duplicate skipping on for 30 FPS games.
 
 ## Settings
 
 | Setting | What it does |
 |---|---|
-| Vidéo / Format | The capture device and the mode it sends. Prefer 1920 x 1080 @ 60 fps. |
-| Son | The card's audio input (often called "Digital Audio Interface" or the card's name). "Aucun" for no sound. |
-| Plage de couleurs | Auto reads it from the stream. **Limitée** if blacks look grey and washed out, **Pleine** if blacks are crushed. |
-| Matrice | Auto: BT.601 for MJPG (JPEG) cards, BT.709 for HD YUV. Change it if skin tones or reds look off. |
-| Luminosité, Contraste, Saturation, Netteté | Picture adjustments on the GPU, no cost in latency. |
-| Plein écran exclusif | Real exclusive fullscreen at your monitor's resolution and refresh rate. Needed by AFMF on RX 6000. |
+| Video / Format | The capture device and the mode it sends. Prefer 1920 x 1080 @ 60 fps. |
+| Sound | The card's audio input (often called "Digital Audio Interface" or the card's name). "None" for no sound. |
+| Colour range | Auto reads it from the stream. **Limited** if blacks look grey and washed out, **Full** if blacks are crushed. |
+| Matrix | Auto: BT.601 for MJPG (JPEG) cards, BT.709 for HD YUV. Change it if skin tones or reds look off. |
+| Brightness, Contrast, Saturation, Sharpness | Picture adjustments on the GPU, no cost in latency. |
+| Exclusive fullscreen | Real exclusive fullscreen at your monitor's resolution and refresh rate. Needed by AFMF on RX 6000. |
 | VSync | Removes tearing, adds up to one refresh of delay. Off by default. |
-| Ignorer les images en double / Seuil | Skips frames that are nearly identical to the previous one. Raise the threshold if your card's compression noise stops duplicates from being detected (the "affichées" number stays at 60 for a 30 FPS game); lower it if real frames are skipped. |
+| Skip duplicate frames / Threshold | Skips frames that are nearly identical to the previous one. Raise the threshold if your card's compression noise stops duplicates from being detected (the "shown" number stays at 60 for a 30 FPS game); lower it if real frames are skipped. |
 
 ### Keys in fullscreen
 
 | Key | Action |
 |---|---|
-| Échap | Back to the window |
+| Esc | Back to the window |
 | D | Duplicate skipping on / off |
 | R | Next colour range (Auto, Limited, Full) |
 | M | Next matrix (Auto, BT.601, BT.709) |
 | + / - | Brightness |
 | V | VSync on / off |
-| Alt+Entrée | Leave / re-enter exclusive fullscreen (exclusive mode only) |
+| Alt+Enter | Leave / re-enter exclusive fullscreen (exclusive mode only) |
 
 ## How it works
 
@@ -87,12 +91,14 @@ Audio input ──▶ Media Foundation (float PCM) ──▶ WASAPI shared mode,
 
 | File | Content |
 |---|---|
-| `src/main.cpp` | launcher window, settings file, starting a session |
+| `src/main.cpp` | launcher window, language choice, settings file, starting a session |
+| `src/i18n.h` | every interface string in English and French |
 | `src/video.cpp` | device and format enumeration, Media Foundation capture |
 | `src/render.cpp` | capture thread, duplicate detection, Direct3D 11 renderer, fullscreen window, hotkeys |
 | `src/shaders.h` | HLSL for the two passes, compiled at start with `d3dcompiler_47.dll` |
 | `src/audio.cpp` | audio passthrough |
 | `res/` | icon, manifest (visual styles, DPI awareness), version info |
+| `docs/` | images used by this README |
 
 ## Building
 
@@ -112,11 +118,23 @@ pip install ziglang
 
 Both give `build/relais.exe`. Every push to `main` is also built by GitHub Actions.
 
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Only one format in the list (for example 1080p 30 fps) | Windows is sharing the camera with another app. Open **Settings > Bluetooth & devices > Cameras >** your card **> Advanced camera options**, turn off **Allow multiple apps to use the camera at the same time**, then click ↻ in Relais. If there is still one format, it is all your card can send. |
+| "Could not open the capture card" | Close OBS, Discord, the Camera app or any browser tab using a camera. |
+| Grey blacks, washed-out picture | Colour range: **Limited** (or press R in fullscreen). |
+| Crushed blacks, oversaturated colours | Colour range: **Full** (or press R in fullscreen). |
+| The AMD metrics overlay disappears when Relais starts | It may have moved to your other monitor. Turn it on in **Performance > Settings > Show Metrics Overlay**; Ctrl+Shift+O toggles it. |
+| Relais opens on the wrong monitor | Move the Relais window to the monitor you want before clicking **Start**. |
+
 ## Limitations
 
 - HDR capture is shown as SDR.
 - The duplicate detector looks at the picture, so a static screen (menu, pause) is also seen as duplicates: nothing new is shown, which is invisible on screen.
-- Cheap USB 2.0 capture sticks send compressed MJPG, which adds a few milliseconds of decoding and some noise in dark areas.
+- Cheap USB capture sticks are often limited to 1080p at 30 FPS, or send compressed MJPG, which adds a few milliseconds of decoding and some noise in dark areas.
+- Frame generation from a 30 FPS base shows artifacts on fast motion. Relais cannot fix this: it comes from AFMF and Lossless Scaling having no motion data from the game.
 
 ## License
 

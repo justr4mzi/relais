@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#define RELAIS_VERSION L"1.0.0"
+#define RELAIS_VERSION L"1.1.0"
 
 // ---------------------------------------------------------------------------
 // Settings (saved in %APPDATA%\Relais\relais.ini)
@@ -45,6 +45,7 @@ struct Settings {
     bool vsync = false;
     bool dropDuplicates = true; // skip repeated frames (30 fps games captured at 60 fps)
     int dupThreshold = 15;      // tenths of a grey level of mean difference
+    int language = -1;          // -1 = not chosen yet (asked on first launch), 0 = English, 1 = French
 };
 
 void LoadSettings(Settings& s);

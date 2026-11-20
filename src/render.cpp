@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "app.h"
 #include "shaders.h"
+#include "i18n.h"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -189,7 +190,7 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                    levels, 4, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
-    if (FAILED(hr)) { err = Format(L"DirectX 11 n'a pas pu démarrer (0x%08X).", hr); return false; }
+    if (FAILED(hr)) { err = Format(T(STR_ERR_DX), hr); return false; }
 
     IDXGIDevice* dxgiDev = nullptr; IDXGIAdapter* adapter = nullptr; IDXGIFactory* factory = nullptr;
     dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev);
@@ -217,7 +218,7 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     hr = factory->CreateSwapChain(dev, &sd, &swap);
     if (SUCCEEDED(hr)) factory->MakeWindowAssociation(hwnd, exclusive ? 0 : DXGI_MWA_NO_ALT_ENTER);
     SafeRelease(factory); SafeRelease(adapter); SafeRelease(dxgiDev);
-    if (FAILED(hr)) { err = Format(L"Impossible de créer la chaîne d'affichage (0x%08X).", hr); return false; }
+    if (FAILED(hr)) { err = Format(T(STR_ERR_SWAPCHAIN), hr); return false; }
 
     if (exclusive) {
         // Keep the desktop resolution and refresh rate: the picture is scaled by the GPU.
@@ -237,7 +238,7 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     // Shaders
     HMODULE dll = LoadLibraryW(L"d3dcompiler_47.dll");
     PFN_Compile compile = dll ? (PFN_Compile)GetProcAddress(dll, "D3DCompile") : nullptr;
-    if (!compile) { err = L"d3dcompiler_47.dll est introuvable (Windows 10 ou 11 requis)."; return false; }
+    if (!compile) { err = T(STR_ERR_D3DCOMPILER); return false; }
     auto build = [&](const char* entry, const char* target, const char* define, ID3DBlob** blob) -> bool {
         D3D_SHADER_MACRO macros[] = {{define, "1"}, {nullptr, nullptr}};
         ID3DBlob* errors = nullptr;
@@ -245,7 +246,7 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
                             entry, target, (1u << 15) /* D3DCOMPILE_OPTIMIZATION_LEVEL3 */, 0, blob, &errors);
         if (FAILED(h)) {
             std::string msg = errors ? std::string((const char*)errors->GetBufferPointer(), errors->GetBufferSize()) : "";
-            err = L"Erreur de shader : " + std::wstring(msg.begin(), msg.end());
+            err = std::wstring(T(STR_ERR_SHADER)) + std::wstring(msg.begin(), msg.end());
         }
         SafeRelease(errors);
         return SUCCEEDED(h);
@@ -273,7 +274,7 @@ bool Renderer::Init(HWND wnd, bool excl, std::wstring& err) {
     smp.MaxLOD = D3D11_FLOAT32_MAX;
     dev->CreateSamplerState(&smp, &sampler);
 
-    if (!vs || !psDecode || !psPicture || !cbDecode || !cbPicture || !sampler) { err = L"Initialisation DirectX incomplète."; return false; }
+    if (!vs || !psDecode || !psPicture || !cbDecode || !cbPicture || !sampler) { err = T(STR_ERR_DX_INCOMPLETE); return false; }
     return CreateBackbuffer();
 }
 
@@ -377,6 +378,7 @@ void Renderer::Draw(const DecodeCB& d, const PictureCB& p) {
         else in[2] = srv0;
         ctx->PSSetShader(psDecode, nullptr, 0);
         ctx->PSSetShaderResources(0, 3, in);
+        ctx->PSSetSamplers(0, 1, &sampler);
         ctx->PSSetConstantBuffers(0, 1, &cbDecode);
         ctx->Draw(3, 0);
 
@@ -472,7 +474,7 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
     WaitForSingleObject(sh.openedEvent, 15000);
     if (!sh.opened) {
         sh.stop = true;
-        stats.error = sh.error.empty() ? L"La carte de capture ne répond pas." : sh.error;
+        stats.error = sh.error.empty() ? T(STR_ERR_NO_RESPONSE) : sh.error;
         if (WaitForSingleObject(capThread, 5000) == WAIT_OBJECT_0) {
             CloseHandle(sh.frameEvent); CloseHandle(sh.openedEvent);
             DeleteCriticalSection(&sh.lock);
@@ -510,7 +512,7 @@ SessionStats RunViewer(HINSTANCE inst, Settings& s, const VideoMode& mode) {
     bool ok = r.Init(hwnd, s.exclusive, err);
     if (ok && !s.audioDevice.empty()) {
         std::wstring aerr;
-        if (!audio.Start(s.audioDevice, aerr)) stats.error = L"Son : " + aerr;
+        if (!audio.Start(s.audioDevice, aerr)) stats.error = std::wstring(T(STR_ERR_SOUND)) + aerr;
     }
     if (!ok) stats.error = err;
 

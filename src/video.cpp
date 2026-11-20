@@ -1,6 +1,7 @@
 // Relais - Media Foundation capture
 // SPDX-License-Identifier: MIT
 #include "app.h"
+#include "i18n.h"
 
 #include <initguid.h>
 #include <mfapi.h>
@@ -173,7 +174,7 @@ std::vector<VideoMode> EnumVideoModes(const std::wstring& deviceId) {
 bool VideoCapture::Open(const std::wstring& deviceId, const VideoMode& mode, std::wstring& error) {
     Close();
     HRESULT hr = CreateVideoSource(deviceId, &source_);
-    if (FAILED(hr)) { error = Format(L"Impossible d'ouvrir la carte de capture (0x%08X). Elle est peut-être utilisée par une autre appli (OBS, Discord...).", hr); return false; }
+    if (FAILED(hr)) { error = Format(T(STR_ERR_OPEN_CARD), hr); return false; }
 
     // Pick the device format chosen by the user.
     IMFMediaTypeHandler* h = nullptr;
@@ -184,7 +185,7 @@ bool VideoCapture::Open(const std::wstring& deviceId, const VideoMode& mode, std
         if (SUCCEEDED(hr)) { hr = h->SetCurrentMediaType(t); t->Release(); }
         h->Release();
     }
-    if (FAILED(hr)) { error = Format(L"Le format choisi n'est pas accepté par la carte (0x%08X).", hr); Close(); return false; }
+    if (FAILED(hr)) { error = Format(T(STR_ERR_FORMAT_REFUSED), hr); Close(); return false; }
     sourceIsMjpeg = (mode.subtype == MFVideoFormat_MJPG);
 
     IMFAttributes* attr = nullptr;
@@ -195,7 +196,7 @@ bool VideoCapture::Open(const std::wstring& deviceId, const VideoMode& mode, std
     attr->SetUINT32(MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, TRUE);
     hr = MFCreateSourceReaderFromMediaSource(source_, attr, &reader_);
     attr->Release();
-    if (FAILED(hr)) { error = Format(L"Impossible de créer le lecteur vidéo (0x%08X).", hr); Close(); return false; }
+    if (FAILED(hr)) { error = Format(T(STR_ERR_READER), hr); Close(); return false; }
 
     reader_->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
     reader_->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
@@ -217,7 +218,7 @@ bool VideoCapture::Open(const std::wstring& deviceId, const VideoMode& mode, std
         if (SUCCEEDED(hr)) break;
     }
     if (FAILED(hr) || !ReadOutputType()) {
-        error = Format(L"Aucun format de sortie utilisable pour ce flux (0x%08X).", hr);
+        error = Format(T(STR_ERR_NO_OUTPUT), hr);
         Close();
         return false;
     }
@@ -258,12 +259,12 @@ bool VideoCapture::ReadFrame(FrameView& frame, bool& got, std::wstring& error) {
     LONGLONG ts = 0;
     HRESULT hr = reader_->ReadSample((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &stream, &flags, &ts, &sample_);
     if (FAILED(hr) || (flags & MF_SOURCE_READERF_ERROR)) {
-        error = Format(L"La capture s'est arrêtée (0x%08X). La carte a peut-être été débranchée.", hr);
+        error = Format(T(STR_ERR_CAPTURE_STOPPED), hr);
         return false;
     }
-    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { error = L"Fin du flux vidéo."; return false; }
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { error = T(STR_ERR_END_OF_STREAM); return false; }
     if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-        if (!ReadOutputType()) { error = L"Le format du flux a changé et n'est plus lisible."; return false; }
+        if (!ReadOutputType()) { error = T(STR_ERR_FORMAT_CHANGED); return false; }
     }
     if (!sample_) return true;
 

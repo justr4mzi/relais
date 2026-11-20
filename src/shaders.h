@@ -21,6 +21,7 @@ VSOut VSMain(uint id : SV_VertexID) {
 Texture2D<float>  texY      : register(t0);
 Texture2D<float2> texUV     : register(t1);
 Texture2D<float4> texPacked : register(t2);
+SamplerState linearClamp : register(s0);
 
 cbuffer Decode : register(b0) {
     int layout;     // 0 = NV12, 1 = YUY2, 2 = RGB32
@@ -46,15 +47,21 @@ float3 YuvToRgb(float y, float u, float v) {
 float4 PSDecode(VSOut i) : SV_Target {
     int2 p = int2(i.pos.xy);
     if (layout == 0) {
+        // Luma at full resolution, chroma (half resolution) interpolated instead of blocky.
         float y = texY.Load(int3(p, 0));
-        float2 uv = texUV.Load(int3(p >> 1, 0));
+        float w, h;
+        texY.GetDimensions(w, h);
+        float2 uv = texUV.SampleLevel(linearClamp, i.pos.xy / float2(w, h), 0);
         return float4(YuvToRgb(y, uv.x, uv.y), 1.0);
     }
     if (layout == 1) {
-        // R8G8B8A8 texel = Y0 U Y1 V
+        // R8G8B8A8 texel = Y0 U Y1 V; chroma interpolated between neighbouring pairs.
         float4 t = texPacked.Load(int3(p.x >> 1, p.y, 0));
         float y = (p.x & 1) ? t.b : t.r;
-        return float4(YuvToRgb(y, t.g, t.a), 1.0);
+        float w, h;
+        texPacked.GetDimensions(w, h);
+        float4 c = texPacked.SampleLevel(linearClamp, float2(i.pos.x / (2.0 * w), i.pos.y / h), 0);
+        return float4(YuvToRgb(y, c.g, c.a), 1.0);
     }
     float3 c = texPacked.Load(int3(p, 0)).rgb;
     if (fullRange == 0) c = saturate((c - 16.0 / 255.0) * (255.0 / 219.0));
